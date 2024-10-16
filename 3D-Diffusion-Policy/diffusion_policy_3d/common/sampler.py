@@ -16,6 +16,7 @@ def create_indices(
 
     indices = list()
     for i in range(len(episode_ends)):
+        #i 指的是第几个episode
         if not episode_mask[i]:
             # skip episode
             continue
@@ -24,7 +25,7 @@ def create_indices(
             start_idx = episode_ends[i-1]
         end_idx = episode_ends[i]
         episode_length = end_idx - start_idx
-        
+        # episode指的是第i个episode有多少个step
         min_start = -pad_before
         max_start = episode_length - sequence_length + pad_after
         

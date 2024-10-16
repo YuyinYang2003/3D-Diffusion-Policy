@@ -7,6 +7,7 @@ import numcodecs
 import numpy as np
 from functools import cached_property
 from termcolor import cprint
+from .get_data import GetData
 
 def check_chunks_compatible(chunks: tuple, shape: tuple):
     assert len(shape) == len(chunks)
@@ -88,8 +89,7 @@ class ReplayBuffer:
     Assumes first dimension to be time. Only chunk in time dimension.
     """
     def __init__(self, 
-            root: Union[zarr.Group, 
-            Dict[str,dict]]):
+            root: Union[zarr.Group, Dict[str,dict]]):
         """
         Dummy constructor. Use copy_from* and create_from* class methods instead.
         """
@@ -143,6 +143,53 @@ class ReplayBuffer:
         group = zarr.open(os.path.expanduser(zarr_path), mode)
         return cls.create_from_group(group, **kwargs)
     
+    # ============= copy constructors for dual ===============
+    @classmethod
+    def getData_dual(cls, data_path, pcd_path, lang_emb_path, dino_path,start, end, pcd_fps, skip_ep,
+            store=None, keys=None, camera_name = None,
+            chunks: Dict[str,tuple]=dict(), 
+            compressors: Union[dict, str, numcodecs.abc.Codec]=dict(), 
+            if_exists='replace',
+            **kwargs):
+        """
+        Load to memory.
+        """
+        root = None
+        getdata = GetData(data_path, pcd_path, lang_emb_path,dino_path)
+        src_root = getdata.process_episodes(start, end, pcd_fps, skip_ep, camera_name)
+        if store is None:
+            # numpy backend
+            meta = dict()
+            for key, value in src_root['meta'].items():
+                if len(value.shape) == 0:
+                    meta[key] = np.array(value)
+                else:
+                    meta[key] = value[:]
+
+            if keys is None:
+                keys = src_root['data'].keys()
+            data = dict()
+            for key in keys:
+                arr = src_root['data'][key]
+                data[key] = arr[:]
+            root = {
+                'meta': meta,
+                'data': data
+            }
+            if int(os.environ["LOCAL_RANK"]) == 0:
+                print(root["data"]["state"].shape)
+                print(root["data"]["action"].shape)
+                print(root["data"]["point_cloud"].shape)
+                print(root["data"]["lang"].shape)
+                print(root["data"]["dino_feature"].shape)
+                print(root["meta"]["episode_ends"])
+        buffer = cls(root=root)
+        if int(os.environ["LOCAL_RANK"]) == 0:
+            for key, value in buffer.items():
+                cprint(f'Replay Buffer: {key}, shape {value.shape}, dtype {value.dtype}, range {value.min():.2f}~{value.max():.2f}', 'green')
+            cprint("--------------------------", 'green')
+        return buffer
+
     # ============= copy constructors ===============
     @classmethod
     def copy_from_store(cls, src_store, store=None, keys=None, 
@@ -203,9 +250,10 @@ class ReplayBuffer:
                         chunks=cks, compressor=cpr, if_exists=if_exists
                     )
         buffer = cls(root=root)
-        for key, value in buffer.items():
-            cprint(f'Replay Buffer: {key}, shape {value.shape}, dtype {value.dtype}, range {value.min():.2f}~{value.max():.2f}', 'green')
-        cprint("--------------------------", 'green')
+        if int(os.environ["LOCAL_RANK"]) == 0:
+            for key, value in buffer.items():
+                cprint(f'Replay Buffer: {key}, shape {value.shape}, dtype {value.dtype}, range {value.min():.2f}~{value.max():.2f}', 'green')
+            cprint("--------------------------", 'green')
         return buffer
     
     @classmethod

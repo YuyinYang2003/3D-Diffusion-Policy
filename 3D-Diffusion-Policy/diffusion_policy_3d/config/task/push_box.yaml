@@ -1,0 +1,56 @@
+name: push_box
+
+task_name: push_box
+
+image_shape: &image_shape [3, 256, 256]
+shape_meta: &shape_meta
+  # acceptable types: rgb, low_dim
+  obs:
+    # image:
+    #     shape: *image_shape
+    #     type: rgb
+    point_cloud:
+      shape: [1024, 6] # TODO
+      type: point_cloud
+    agent_pos:
+      shape: [16]
+      type: low_dim
+    lang:
+      shape: [1024]
+      type: lang
+    # color:
+    #   shape: [6,256,256,3]
+    #   type: color
+    # depth:
+    #   shape: [6,256,256]
+    #   type: depth
+    # pose:
+    #   shape: [6,3,4]
+    #   type: pose
+    # K:
+    #   shape: [6,3,3]
+    #   type: K
+    dino_feature:
+      shape: [1024,1024]
+      type: dino_feature
+  action:
+    shape: [16]
+
+dataset:
+  _target_: diffusion_policy_3d.dataset.rlbench2_dataset.RLBench2Dataset # TODO
+  data_path: /ailab/group/groups/smartbot/tianyang/Dual_Arm_RLBench/training/coordinated_push_box/all_variations/episodes # TODO
+  pcd_path: /ailab/group/groups/smartbot/caizetao/dataset/Dual_Arm_RLBench/training/coordinated_push_box/all_variations/episodes # TODO
+  lang_emb_path: /ailab/user/yangyuyin/act/instruction_embeddings.pkl
+  dino_path: /ailab/group/groups/smartbot/yangyuyin/dataset/Dual_Arm_RLBench/training/coordinated_push_box/all_variations/episodes
+  horizon: ${horizon}
+  pad_before: ${eval:'${n_obs_steps}-1'}  #5
+  pad_after: ${eval:'${n_action_steps}-1'}  #2
+  seed: 42
+  start: 0
+  end: 99
+  pcd_fps: 1024
+  skip_ep: [48,]
+  val_ratio: 0.2
+  max_train_episodes: 90
+  camera_name: ['over_shoulder_left','over_shoulder_right','overhead','wrist_right','wrist_left','front']
+  

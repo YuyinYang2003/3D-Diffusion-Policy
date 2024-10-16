@@ -1,0 +1,177 @@
+defaults:
+  - _self_
+  - task: "push_box" # TODO
+
+name: train_dualdp3_1gpus # 实验名称
+
+#  task
+alg_name: "dualdp3"
+addition_info: "1013_k2_mlp_continuous" # TODO
+seed: 0
+wandb_name: "dp3_box" # TODO
+
+config_name: ${alg_name}
+exp_name: ${task_name}-${alg_name}-${addition_info}
+run_dir: data/outputs/${exp_name}_seed${seed}
+
+# training.debug=${DEBUG} \
+# training.seed=${seed} \
+# training.device="cuda" \
+# exp_name=${exp_name} \
+# logging.mode=${wandb_mode} \
+# checkpoint.save_ckpt=${save_ckpt} \
+# training.num_epochs=400 \
+# dataloader.num_workers=4 \
+# dataloader.batch_size=128
+
+task_name: ${task.name}
+shape_meta: ${task.shape_meta}
+
+horizon: 8 # 4 TODO
+n_obs_steps: 6 # 2 TODO
+n_action_steps: 3 # 3 TODO
+n_latency_steps: 0
+dataset_obs_steps: ${n_obs_steps}
+keypoint_visible_rate: 1.0
+obs_as_global_cond: True
+
+policy:
+  _target_: diffusion_policy_3d.policy.dp3.DP3 # 模型的类路径
+  use_point_crop: true
+  condition_type: film
+  use_down_condition: true
+  use_mid_condition: true
+  use_up_condition: true
+  
+  diffusion_step_embed_dim: 128 # 128
+  down_dims:
+  - 512
+  - 1024
+  - 2048
+  crop_shape:
+  - 256 # 80 
+  - 256 # 80
+  encoder_output_dim: 64 # 64
+  horizon: ${horizon}
+  kernel_size: 5
+  n_action_steps: ${n_action_steps}
+  n_groups: 8
+  n_obs_steps: ${n_obs_steps}
+
+  noise_scheduler:
+    _target_: diffusers.schedulers.scheduling_ddim.DDIMScheduler
+    num_train_timesteps: 100
+    beta_start: 0.0001
+    beta_end: 0.02
+    beta_schedule: squaredcos_cap_v2
+    clip_sample: True
+    set_alpha_to_one: True
+    steps_offset: 0
+    prediction_type: sample
+
+
+  num_inference_steps: 10
+  obs_as_global_cond: true
+  shape_meta: ${shape_meta}
+
+  use_pc_color: false # false
+  pointnet_type: "pointnet" #or mlp
+  use_semantic_feature: True
+
+  use_lang: false
+
+  pointcloud_encoder_cfg:
+    # mlp
+    # in_channels: 3 # 不用改6
+    # k2_channels: 1024  # delete this when use_semantic_feature is False
+    # out_channels: ${policy.encoder_output_dim}
+    # use_layernorm: true
+    # final_norm: layernorm # layernorm, none
+    # normal_channel: false
+    # pointnet
+    in_channels: 1027 # 不用改6
+    out_channels: ${policy.encoder_output_dim}  #??
+
+
+ema:
+  _target_: diffusion_policy_3d.model.diffusion.ema_model.EMAModel
+  update_after_step: 0
+  inv_gamma: 1.0
+  power: 0.75
+  min_value: 0.0
+  max_value: 0.9999
+
+dataloader:
+  batch_size: 128
+  num_workers: 4
+  shuffle: True # true:每个epoch开始时，数据将被打乱
+  pin_memory: True  # ture:加速数据从CPU到GPU的传输
+  persistent_workers: False
+  # 指定了工作进程在完成一个epoch的数据加载后是否应该被销毁
+  # false:每个epoch结束后，工作进程将被销毁，下一个epoch开始时重新创建
+
+val_dataloader:
+  batch_size: 128
+  num_workers: 4
+  shuffle: False
+  pin_memory: True
+  persistent_workers: False
+
+optimizer:
+  _target_: torch.optim.AdamW
+  lr: 1.0e-4
+  betas: [0.95, 0.999]
+  eps: 1.0e-8
+  weight_decay: 1.0e-6
+
+training:
+  device: "cuda"
+  seed: ${seed}
+  debug: False # False
+  resume: False
+  lr_scheduler: cosine
+  lr_warmup_steps: 500
+  num_epochs: 2000 # 3000
+  gradient_accumulate_every: 1
+  use_ema: True
+  rollout_every: 200
+  checkpoint_every: 100
+  val_every: 50
+  sample_every: 5
+  max_train_steps: null
+  max_val_steps: null
+  tqdm_interval_sec: 0.2
+
+logging:
+  group: ${exp_name}
+  id: null
+  mode: offline
+  name: ${training.seed}
+  project: ${wandb_name} # TODO
+  resume: true
+  tags:
+  - ${wandb_name}
+
+checkpoint:
+  save_ckpt: True # if True, save checkpoint every checkpoint_every
+  topk:
+    monitor_key: val_loss # test_mean_score
+    mode: min # max
+    k: 1
+    format_str: 'epoch={epoch:04d}-val_loss={val_loss:.7f}.pth.tar'
+  save_last_ckpt: True # this only saves when save_ckpt is True
+  save_last_snapshot: False
+
+multi_run:
+  run_dir: data/outputs/${now:%Y.%m.%d}/${now:%H.%M.%S}_${name}_${task_name}
+  wandb_name_base: ${now:%Y.%m.%d-%H.%M.%S}_${name}_${task_name}
+
+hydra:
+  job:
+    override_dirname: ${name}
+  run:
+    # dir: data/outputs/${now:%Y.%m.%d}/${now:%H.%M.%S}_${name}_${task_name}
+    dir: ${run_dir}
+  sweep:
+    dir: data/outputs/${now:%Y.%m.%d}/${now:%H.%M.%S}_${name}_${task_name}
+    subdir: ${hydra.job.num}

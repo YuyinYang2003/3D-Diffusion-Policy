@@ -17,34 +17,38 @@ from diffusion_policy_3d.model.diffusion.mask_generator import LowdimMaskGenerat
 from diffusion_policy_3d.common.pytorch_util import dict_apply
 from diffusion_policy_3d.common.model_util import print_params
 from diffusion_policy_3d.model.vision.pointnet_extractor import DP3Encoder
+import os
 
 class DP3(BasePolicy):
     def __init__(self, 
-            shape_meta: dict,
-            noise_scheduler: DDPMScheduler,
-            horizon, 
-            n_action_steps, 
-            n_obs_steps,
-            num_inference_steps=None,
-            obs_as_global_cond=True,
-            diffusion_step_embed_dim=256,
-            down_dims=(256,512,1024),
-            kernel_size=5,
-            n_groups=8,
-            condition_type="film",
-            use_down_condition=True,
-            use_mid_condition=True,
-            use_up_condition=True,
-            encoder_output_dim=256,
-            crop_shape=None,
-            use_pc_color=False,
-            pointnet_type="pointnet",
-            pointcloud_encoder_cfg=None,
+            shape_meta: dict, # 包含动作和观察数据的形状信息，动作（'action'）和观测（'obs'）
+            noise_scheduler: DDPMScheduler, # DDPM 调度噪声的扩散模型调度器
+            horizon, # 
+            n_action_steps, # 每个时间步(预测/历史)的动作数量 ？ 
+            n_obs_steps, # 每个时间步观测到的特征(v+q)的数量
+            num_inference_steps=None, # 推断过程中使用的步数,调度器的训练时间步数
+            obs_as_global_cond=True, # 是否将观察数据作为全局条件
+            diffusion_step_embed_dim=256, # 扩散模型中用于表示步骤信息的嵌入向量的维度 
+            down_dims=(256,512,1024), # DDIM 的U-net 
+            kernel_size=5, # U-net 中卷积层的核
+            n_groups=8, # 分组卷积的组数
+            condition_type="film", # 条件类型, 在每个卷积层之后，会使用条件信息对特征图进行线性调节
+            use_down_condition=True, # 在降维过程中使用条件
+            use_mid_condition=True, # 在中间层使用条件
+            use_up_condition=True, # 在上升过程中使用条件
+            encoder_output_dim=256, # encoder 中3层MLP的输出维度 B * 256
+            crop_shape=None, # 图像裁剪的形状
+            use_pc_color=False, # 是否使用点云颜色
+            use_semantic_feature=True,
+            pointnet_type="pointnet", # 点云处理网络的类型
+            use_lang=False,
+            pointcloud_encoder_cfg=None, # 点云编码器的配置
             # parameters passed to step
             **kwargs):
         super().__init__()
 
         self.condition_type = condition_type
+        self.rank = int(os.environ["LOCAL_RANK"])
 
         # parse shape_meta
         action_shape = shape_meta['action']['shape']
@@ -58,18 +62,29 @@ class DP3(BasePolicy):
             
         obs_shape_meta = shape_meta['obs']
         obs_dict = dict_apply(obs_shape_meta, lambda x: x['shape'])
+        print(obs_dict)
+        # obs_dict = 
+        # {
+        #     'point_cloud': [1024, 3],
+        #     'agent_pos': [16]
+        #     'lang': [1024]
+        #     'dino_feature': [1024,1024]
+        # }
 
 
+        # 观测编码
         obs_encoder = DP3Encoder(observation_space=obs_dict,
-                                                   img_crop_shape=crop_shape,
-                                                out_channel=encoder_output_dim,
-                                                pointcloud_encoder_cfg=pointcloud_encoder_cfg,
-                                                use_pc_color=use_pc_color,
-                                                pointnet_type=pointnet_type,
-                                                )
+                                img_crop_shape=crop_shape,
+                                out_channel=encoder_output_dim,
+                                pointcloud_encoder_cfg=pointcloud_encoder_cfg,
+                                use_pc_color=use_pc_color,
+                                use_semantic_feature=use_semantic_feature,
+                                use_lang=use_lang,
+                                pointnet_type=pointnet_type,
+                                )
 
         # create diffusion model
-        obs_feature_dim = obs_encoder.output_shape()
+        obs_feature_dim = obs_encoder.output_shape() # 128 = v64 + p64
         input_dim = action_dim + obs_feature_dim
         global_cond_dim = None
         if obs_as_global_cond:
@@ -81,18 +96,21 @@ class DP3(BasePolicy):
         
 
         self.use_pc_color = use_pc_color
+        self.use_semantic_feature = use_semantic_feature
         self.pointnet_type = pointnet_type
-        cprint(f"[DiffusionUnetHybridPointcloudPolicy] use_pc_color: {self.use_pc_color}", "yellow")
-        cprint(f"[DiffusionUnetHybridPointcloudPolicy] pointnet_type: {self.pointnet_type}", "yellow")
+        if self.rank == 0:
+            cprint(f"[DiffusionUnetHybridPointcloudPolicy] use_pc_color: {self.use_pc_color}", "yellow")
+            cprint(f"[DiffusionUnetHybridPointcloudPolicy] use_semantic_feature: {self.use_semantic_feature}", "yellow")
+            cprint(f"[DiffusionUnetHybridPointcloudPolicy] pointnet_type: {self.pointnet_type}", "yellow")
 
 
 
         model = ConditionalUnet1D(
-            input_dim=input_dim,
+            input_dim=input_dim, # input_dim = action_dim
             local_cond_dim=None,
-            global_cond_dim=global_cond_dim,
+            global_cond_dim=global_cond_dim, # 128
             diffusion_step_embed_dim=diffusion_step_embed_dim,
-            down_dims=down_dims,
+            down_dims=down_dims, # 512,1024,2048
             kernel_size=kernel_size,
             n_groups=n_groups,
             condition_type=condition_type,
@@ -112,12 +130,12 @@ class DP3(BasePolicy):
             obs_dim=0 if obs_as_global_cond else obs_feature_dim,
             max_n_obs_steps=n_obs_steps,
             fix_obs_steps=True,
-            action_visible=False
+            action_visible=True
         )
         
         self.normalizer = LinearNormalizer()
         self.horizon = horizon
-        self.obs_feature_dim = obs_feature_dim
+        self.obs_feature_dim = obs_feature_dim # 64
         self.action_dim = action_dim
         self.n_action_steps = n_action_steps
         self.n_obs_steps = n_obs_steps
@@ -128,8 +146,8 @@ class DP3(BasePolicy):
             num_inference_steps = noise_scheduler.config.num_train_timesteps
         self.num_inference_steps = num_inference_steps
 
-
-        print_params(self)
+        if int(os.environ["LOCAL_RANK"]) == 0:
+            print_params(self)
         
     # ========= inference  ============
     def conditional_sample(self, 
@@ -201,6 +219,7 @@ class DP3(BasePolicy):
         # handle different ways of passing observation
         local_cond = None
         global_cond = None
+
         if self.obs_as_global_cond:
             # condition through global feature
             this_nobs = dict_apply(nobs, lambda x: x[:,:To,...].reshape(-1,*x.shape[2:]))
@@ -302,6 +321,7 @@ class DP3(BasePolicy):
 
 
         # generate impainting mask
+        # print('trajectory.shape: ',trajectory.shape)
         condition_mask = self.mask_generator(trajectory.shape)
 
         # Sample noise that we'll add to the images
